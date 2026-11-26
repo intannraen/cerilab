@@ -1,0 +1,6 @@
+{
+  "name": "CeriLib — Perpustakaan Digital Minimalis",
+  "description": "Perpustakaan digital berbasis web untuk peminjaman buku daring, riwayat peminjaman, manajemen koleksi pustakawan, dan notifikasi keterlambatan otomatis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

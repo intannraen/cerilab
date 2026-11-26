@@ -1,0 +1,315 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'intannraen@gmail.com';
+    }
+
+    function isLibrarian() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/librarians/$(request.auth.uid))
+      );
+    }
+
+    // --- Entity Validation Blueprints ---
+    function isValidBookCategory(cat) {
+      return cat in ['Filsafat', 'Desain & Seni', 'Arsitektur', 'Teknologi', 'Sastra', 'Sejarah', 'Sains'];
+    }
+
+    function isValidBook(data) {
+      return data.keys().hasAll([
+        'title', 'author', 'isbn', 'category', 'publishedYear', 'pages',
+        'synopsis', 'coverUrl', 'totalCopies', 'availableCopies',
+        'loanDurationDays', 'digitalReadExcerpt', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'title', 'author', 'isbn', 'category', 'publishedYear', 'pages',
+        'synopsis', 'coverUrl', 'totalCopies', 'availableCopies',
+        'loanDurationDays', 'digitalReadExcerpt', 'createdAt', 'updatedAt'
+      ]) &&
+      data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+      data.author is string && data.author.size() >= 1 && data.author.size() <= 100 &&
+      data.isbn is string && data.isbn.size() >= 3 && data.isbn.size() <= 32 &&
+      data.category is string && isValidBookCategory(data.category) &&
+      data.publishedYear is int && data.publishedYear >= 1400 && data.publishedYear <= 2100 &&
+      data.pages is int && data.pages >= 1 && data.pages <= 10000 &&
+      data.synopsis is string && data.synopsis.size() >= 1 && data.synopsis.size() <= 1500 &&
+      data.coverUrl is string && data.coverUrl.size() <= 500 &&
+      data.totalCopies is int && data.totalCopies >= 1 && data.totalCopies <= 999 &&
+      data.availableCopies is int && data.availableCopies >= 0 && data.availableCopies <= data.totalCopies &&
+      data.loanDurationDays is int && data.loanDurationDays >= 1 && data.loanDurationDays <= 60 &&
+      data.digitalReadExcerpt is string && data.digitalReadExcerpt.size() <= 4000 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+        'uid', 'displayName', 'email', 'memberCode', 'role', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'displayName', 'email', 'memberCode', 'role', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.uid) &&
+      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+      data.memberCode is string && data.memberCode.size() >= 4 && data.memberCode.size() <= 32 &&
+      data.role in ['member', 'librarian'] &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidLibrarianRole(data) {
+      return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt']) &&
+      data.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt']) &&
+      isValidId(data.uid) &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+      isValidId(data.grantedBy) &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidLoan(data) {
+      return data.keys().hasAll([
+        'userId', 'userName', 'userEmail', 'bookId', 'bookTitle',
+        'bookAuthor', 'bookCoverUrl', 'status', 'borrowedAt', 'dueAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'userId', 'userName', 'userEmail', 'bookId', 'bookTitle',
+        'bookAuthor', 'bookCoverUrl', 'status', 'borrowedAt', 'dueAt', 'returnedAt', 'updatedAt'
+      ]) &&
+      isValidId(data.userId) &&
+      data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 100 &&
+      data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 160 &&
+      isValidId(data.bookId) &&
+      data.bookTitle is string && data.bookTitle.size() >= 1 && data.bookTitle.size() <= 140 &&
+      data.bookAuthor is string && data.bookAuthor.size() >= 1 && data.bookAuthor.size() <= 100 &&
+      data.bookCoverUrl is string && data.bookCoverUrl.size() <= 500 &&
+      data.status in ['borrowed', 'returned'] &&
+      data.borrowedAt is timestamp &&
+      data.dueAt is timestamp &&
+      (!('returnedAt' in data) || data.returnedAt == null || data.returnedAt is timestamp) &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll([
+        'userId', 'loanId', 'bookId', 'bookTitle', 'type',
+        'daysOverdue', 'message', 'isRead', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'userId', 'loanId', 'bookId', 'bookTitle', 'type',
+        'daysOverdue', 'message', 'isRead', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.userId) &&
+      isValidId(data.loanId) &&
+      isValidId(data.bookId) &&
+      data.bookTitle is string && data.bookTitle.size() >= 1 && data.bookTitle.size() <= 140 &&
+      data.type in ['overdue', 'due_soon'] &&
+      data.daysOverdue is int && data.daysOverdue >= 0 && data.daysOverdue <= 3650 &&
+      data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
+      data.isRead is bool &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // 1. Public Library Book Catalog (Non-PII)
+    match /books/{bookId} {
+      allow get: if isValidId(bookId);
+      allow list: if resource.data.totalCopies >= 1;
+
+      allow create: if isLibrarian() &&
+        isValidId(bookId) &&
+        isValidBook(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(bookId) &&
+        isValidBook(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isLibrarian() ||
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['availableCopies', 'updatedAt']) &&
+            (
+              incoming().availableCopies == existing().availableCopies - 1 ||
+              incoming().availableCopies == existing().availableCopies + 1
+            )
+          )
+        );
+
+      allow delete: if isLibrarian() && isValidId(bookId);
+    }
+
+    // 2. Private User Profiles (PII Isolated)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isLibrarian());
+      allow list: if isLibrarian() || (isSignedIn() && resource.data.uid == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().role == 'member' || isLibrarian());
+
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isLibrarian() ||
+          (
+            isOwner(userId) &&
+            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])
+          )
+        );
+    }
+
+    // 3. Trusted Librarian Role Lookup
+    match /librarians/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isLibrarian());
+      allow list: if isLibrarian();
+
+      allow create: if isLibrarian() &&
+        isValidId(userId) &&
+        isValidLibrarianRole(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time;
+
+      allow delete: if isLibrarian() && isValidId(userId);
+    }
+
+    // 4. Borrowing & History Records (Contains member email PII)
+    match /loans/{loanId} {
+      allow get: if isValidId(loanId) && (
+        isLibrarian() ||
+        (isSignedIn() && existing().userId == request.auth.uid)
+      );
+
+      allow list: if isLibrarian() || (isSignedIn() && resource.data.userId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(loanId) &&
+        isValidLoan(incoming()) &&
+        incoming().status == 'borrowed' &&
+        (!('returnedAt' in incoming()) || incoming().returnedAt == null) &&
+        incoming().borrowedAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().userId == request.auth.uid || isLibrarian()) &&
+        exists(/databases/$(database)/documents/books/$(incoming().bookId)) &&
+        get(/databases/$(database)/documents/books/$(incoming().bookId)).data.availableCopies >= 1 &&
+        getAfter(/databases/$(database)/documents/books/$(incoming().bookId)).data.availableCopies ==
+          get(/databases/$(database)/documents/books/$(incoming().bookId)).data.availableCopies - 1;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(loanId) &&
+        isValidLoan(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().userName == existing().userName &&
+        incoming().userEmail == existing().userEmail &&
+        incoming().bookId == existing().bookId &&
+        incoming().bookTitle == existing().bookTitle &&
+        incoming().bookAuthor == existing().bookAuthor &&
+        incoming().bookCoverUrl == existing().bookCoverUrl &&
+        incoming().borrowedAt == existing().borrowedAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Member or Librarian returns an active borrowed book atomically
+          (
+            existing().status == 'borrowed' &&
+            incoming().status == 'returned' &&
+            incoming().returnedAt == request.time &&
+            incoming().dueAt == existing().dueAt &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'returnedAt', 'updatedAt']) &&
+            (existing().userId == request.auth.uid || isLibrarian()) &&
+            getAfter(/databases/$(database)/documents/books/$(existing().bookId)).data.availableCopies ==
+              get(/databases/$(database)/documents/books/$(existing().bookId)).data.availableCopies + 1
+          ) ||
+          // Action 2: Librarian adjusts due date (e.g. extension or overdue simulation)
+          (
+            isLibrarian() &&
+            existing().status == 'borrowed' &&
+            incoming().status == 'borrowed' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['dueAt', 'updatedAt'])
+          )
+        );
+    }
+
+    // 5. Automatic Overdue & Due-Soon Notifications
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && (
+        isLibrarian() ||
+        (isSignedIn() && existing().userId == request.auth.uid)
+      );
+
+      allow list: if isLibrarian() || (isSignedIn() && resource.data.userId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(notificationId) &&
+        isValidNotification(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().userId == request.auth.uid || isLibrarian()) &&
+        exists(/databases/$(database)/documents/loans/$(incoming().loanId)) &&
+        get(/databases/$(database)/documents/loans/$(incoming().loanId)).data.userId == incoming().userId &&
+        get(/databases/$(database)/documents/loans/$(incoming().loanId)).data.bookId == incoming().bookId;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(notificationId) &&
+        isValidNotification(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().loanId == existing().loanId &&
+        incoming().bookId == existing().bookId &&
+        incoming().bookTitle == existing().bookTitle &&
+        incoming().type == existing().type &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (existing().userId == request.auth.uid || isLibrarian()) && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['daysOverdue', 'message', 'updatedAt'])
+        );
+
+      allow delete: if isValidId(notificationId) && (
+        isLibrarian() ||
+        (isSignedIn() && existing().userId == request.auth.uid)
+      );
+    }
+  }
+}

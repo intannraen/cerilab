@@ -1,0 +1,333 @@
+{
+  "entities": {
+    "Book": {
+      "title": "Book",
+      "description": "Digital library catalog item managed by librarians and borrowable by members.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "isbn": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "Filsafat",
+            "Desain & Seni",
+            "Arsitektur",
+            "Teknologi",
+            "Sastra",
+            "Sejarah",
+            "Sains"
+          ]
+        },
+        "publishedYear": {
+          "type": "number"
+        },
+        "pages": {
+          "type": "number"
+        },
+        "synopsis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1500
+        },
+        "coverUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "totalCopies": {
+          "type": "number"
+        },
+        "availableCopies": {
+          "type": "number"
+        },
+        "loanDurationDays": {
+          "type": "number"
+        },
+        "digitalReadExcerpt": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "title",
+        "author",
+        "isbn",
+        "category",
+        "publishedYear",
+        "pages",
+        "synopsis",
+        "coverUrl",
+        "totalCopies",
+        "availableCopies",
+        "loanDurationDays",
+        "digitalReadExcerpt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated library member profile with private PII.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "memberCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32
+        },
+        "role": {
+          "type": "string",
+          "enum": ["member", "librarian"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "email",
+        "memberCode",
+        "role",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LibrarianRole": {
+      "title": "LibrarianRole",
+      "description": "Trusted role lookup record granting librarian permissions.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "grantedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "grantedBy", "createdAt"]
+    },
+    "Loan": {
+      "title": "Loan",
+      "description": "Digital book borrowing record and return history.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "userEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "bookId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "bookTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "bookAuthor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "bookCoverUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["borrowed", "returned"]
+        },
+        "borrowedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "dueAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "returnedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "userId",
+        "userName",
+        "userEmail",
+        "bookId",
+        "bookTitle",
+        "bookAuthor",
+        "bookCoverUrl",
+        "status",
+        "borrowedAt",
+        "dueAt",
+        "updatedAt"
+      ]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Automatic overdue and return reminder notifications for members.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "loanId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "bookId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "bookTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "type": {
+          "type": "string",
+          "enum": ["overdue", "due_soon"]
+        },
+        "daysOverdue": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "isRead": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "userId",
+        "loanId",
+        "bookId",
+        "bookTitle",
+        "type",
+        "daysOverdue",
+        "message",
+        "isRead",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/books/{bookId}": {
+      "schema": { "$ref": "#/entities/Book" },
+      "description": "Library book catalog collection."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private member profile documents containing PII."
+    },
+    "/librarians/{userId}": {
+      "schema": { "$ref": "#/entities/LibrarianRole" },
+      "description": "Trusted librarian RBAC lookup documents."
+    },
+    "/loans/{loanId}": {
+      "schema": { "$ref": "#/entities/Loan" },
+      "description": "Member book borrowing records and historical returns."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Automatic overdue and due-soon alerts tied to loans."
+    }
+  }
+}

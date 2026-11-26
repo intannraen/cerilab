@@ -106,57 +106,81 @@ export function getLoanTiming(loan: Loan, nowMs: number = Date.now()) {
   };
 }
 
+const inFlightProfiles = new Map<string, Promise<UserProfile>>();
+
 export async function ensureUserProfile(user: User): Promise<UserProfile> {
-  const userPath = `users/${user.uid}`;
-  const userRef = doc(db, 'users', user.uid);
-  const librarianRef = doc(db, 'librarians', user.uid);
+  const pending = inFlightProfiles.get(user.uid);
+  if (pending) return pending;
 
-  let isInLibrariansTable = false;
-  try {
-    const libSnap = await getDoc(librarianRef);
-    isInLibrariansTable = libSnap.exists();
-  } catch {
-    // Non-librarians may not exist in /librarians
-    isInLibrariansTable = false;
-  }
+  const task = (async (): Promise<UserProfile> => {
+    const userPath = `users/${user.uid}`;
+    const userRef = doc(db, 'users', user.uid);
+    const librarianRef = doc(db, 'librarians', user.uid);
 
-  const isBootstrapped =
-    user.emailVerified &&
-    user.email?.toLowerCase() === BOOTSTRAPPED_LIBRARIAN_EMAIL.toLowerCase();
-  const effectiveRole = isBootstrapped || isInLibrariansTable ? 'librarian' : 'member';
+    let isInLibrariansTable = false;
+    try {
+      const libSnap = await getDoc(librarianRef);
+      isInLibrariansTable = libSnap.exists();
+    } catch {
+      isInLibrariansTable = false;
+    }
 
-  try {
-    const snap = await getDoc(userRef);
-    if (!snap.exists()) {
-      const codeSuffix = user.uid.slice(0, 6).toUpperCase();
-      const newProfile = {
-        uid: user.uid,
-        displayName: clampString(user.displayName || user.email?.split('@')[0] || 'Anggota', 100),
-        email: clampString(user.email || 'anggota@cerilib.id', 160),
-        memberCode: `CL-${codeSuffix}`,
-        role: effectiveRole,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+    const isBootstrapped =
+      Boolean(user.emailVerified) &&
+      user.email?.toLowerCase() === BOOTSTRAPPED_LIBRARIAN_EMAIL.toLowerCase();
+    const effectiveRole = isBootstrapped || isInLibrariansTable ? 'librarian' : 'member';
+
+    try {
+      const snap = await getDoc(userRef);
+      if (!snap.exists()) {
+        const codeSuffix = (user.uid.slice(0, 6) || 'MEMBER').toUpperCase();
+        const displayName =
+          clampString(user.displayName || user.email?.split('@')[0] || 'Anggota', 100) ||
+          'Anggota';
+        const email = clampString(user.email || 'anggota@cerilib.id', 160) || 'anggota@cerilib.id';
+        const newProfile = {
+          uid: user.uid,
+          displayName,
+          email,
+          memberCode: `CL-${codeSuffix}`,
+          role: effectiveRole,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+        await setDoc(userRef, newProfile);
+        return {
+          uid: user.uid,
+          displayName,
+          email,
+          memberCode: `CL-${codeSuffix}`,
+          role: effectiveRole,
+          createdAt: Timestamp.now(),
+          updatedAt: Timestamp.now(),
+        };
+      }
+
+      const existing = snap.data() as UserProfile;
+      if (isBootstrapped && existing.role !== 'librarian') {
+        await updateDoc(userRef, {
+          role: 'librarian',
+          updatedAt: serverTimestamp(),
+        });
+        return { ...existing, role: 'librarian' };
+      }
+      return {
+        ...existing,
+        role: effectiveRole === 'librarian' ? 'librarian' : existing.role,
       };
-      await setDoc(userRef, newProfile);
-      const createdSnap = await getDoc(userRef);
-      return createdSnap.data() as UserProfile;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, userPath);
     }
+  })();
 
-    const existing = snap.data() as UserProfile;
-    if (isBootstrapped && existing.role !== 'librarian') {
-      await updateDoc(userRef, {
-        role: 'librarian',
-        updatedAt: serverTimestamp(),
-      });
-      return { ...existing, role: 'librarian' };
-    }
-    return {
-      ...existing,
-      role: effectiveRole === 'librarian' ? 'librarian' : existing.role,
-    };
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, userPath);
+  inFlightProfiles.set(user.uid, task);
+  try {
+    return await task;
+  } finally {
+    inFlightProfiles.delete(user.uid);
   }
 }
 

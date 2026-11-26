@@ -12,6 +12,10 @@ import {
   formatIndonesianDate,
   getLoanTiming,
 } from '../services/libraryService';
+import {
+  LibrarianSessionInfo,
+  updateLibrarianCredentials,
+} from '../services/librarianAuthService';
 import { BookCover } from './BookCover';
 import {
   AlertCircle,
@@ -22,6 +26,7 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  KeyRound,
   Library,
   LogOut,
   Pencil,
@@ -36,6 +41,7 @@ import {
 
 interface LibrarianViewProps {
   userProfile: UserProfile;
+  librarianSession: LibrarianSessionInfo | null;
   books: Book[];
   allLoans: Loan[];
   notifications: LibraryNotification[];
@@ -50,11 +56,20 @@ interface LibrarianViewProps {
   onRunOverdueSweep: () => Promise<number>;
   onMarkNotificationRead: (notificationId: string) => Promise<void>;
   onToggleLibrarian: (member: UserProfile, grant: boolean) => Promise<void>;
+  onLibrarianCredentialsUpdated: (session: LibrarianSessionInfo) => void;
   onSwitchToMemberView: () => void;
   onSignOut: () => void;
 }
 
-type LibrarianSection = 'books' | 'circulation' | 'notifications' | 'members';
+type LibrarianSection =
+  | 'books'
+  | 'circulation'
+  | 'notifications'
+  | 'members'
+  | 'settings';
+
+type StockFilter = 'all' | 'available' | 'empty';
+type LoanStatusFilter = 'all' | 'active' | 'overdue' | 'returned';
 
 const EMPTY_BOOK_FORM: BookInput = {
   title: '',
@@ -73,6 +88,7 @@ const EMPTY_BOOK_FORM: BookInput = {
 
 export function LibrarianView({
   userProfile,
+  librarianSession,
   books,
   allLoans,
   notifications,
@@ -87,12 +103,17 @@ export function LibrarianView({
   onRunOverdueSweep,
   onMarkNotificationRead,
   onToggleLibrarian,
+  onLibrarianCredentialsUpdated,
   onSwitchToMemberView,
   onSignOut,
 }: LibrarianViewProps) {
   const [activeSection, setActiveSection] = useState<LibrarianSection>('books');
   const [bookSearch, setBookSearch] = useState('');
   const [bookCategoryFilter, setBookCategoryFilter] = useState<string>('Semua');
+  const [stockFilter, setStockFilter] = useState<StockFilter>('all');
+
+  const [loanSearch, setLoanSearch] = useState('');
+  const [loanStatusFilter, setLoanStatusFilter] = useState<LoanStatusFilter>('all');
 
   const [showFormModal, setShowFormModal] = useState(false);
   const [editingBookId, setEditingBookId] = useState<string | null>(null);
@@ -101,6 +122,17 @@ export function LibrarianView({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [sweepMessage, setSweepMessage] = useState<string | null>(null);
   const [isSweeping, setIsSweeping] = useState(false);
+
+  // Custom Credentials Form State
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newUsername, setNewUsername] = useState(librarianSession?.username || '');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [credStatusMsg, setCredStatusMsg] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const [savingCreds, setSavingCreds] = useState(false);
 
   const metrics = useMemo(() => {
     const now = Date.now();
@@ -125,26 +157,49 @@ export function LibrarianView({
     return books.filter((b) => {
       const matchCat =
         bookCategoryFilter === 'Semua' || b.category === bookCategoryFilter;
+      const matchStock =
+        stockFilter === 'all' ||
+        (stockFilter === 'available' && b.availableCopies > 0) ||
+        (stockFilter === 'empty' && b.availableCopies === 0);
       const matchQuery =
         !q ||
         b.title.toLowerCase().includes(q) ||
         b.author.toLowerCase().includes(q) ||
         b.isbn.toLowerCase().includes(q);
-      return matchCat && matchQuery;
+      return matchCat && matchStock && matchQuery;
     });
-  }, [books, bookSearch, bookCategoryFilter]);
+  }, [books, bookSearch, bookCategoryFilter, stockFilter]);
 
-  const sortedLoans = useMemo(() => {
+  const filteredLoans = useMemo(() => {
     const now = Date.now();
+    const q = loanSearch.trim().toLowerCase();
     return [...allLoans]
       .map((loan) => ({ loan, timing: getLoanTiming(loan, now) }))
+      .filter(({ loan, timing }) => {
+        const matchStatus =
+          loanStatusFilter === 'all' ||
+          (loanStatusFilter === 'active' && loan.status === 'borrowed') ||
+          (loanStatusFilter === 'overdue' &&
+            loan.status === 'borrowed' &&
+            timing.isOverdue) ||
+          (loanStatusFilter === 'returned' && loan.status === 'returned');
+        const matchQuery =
+          !q ||
+          loan.bookTitle.toLowerCase().includes(q) ||
+          loan.userName.toLowerCase().includes(q) ||
+          loan.userEmail.toLowerCase().includes(q);
+        return matchStatus && matchQuery;
+      })
       .sort((a, b) => {
         if (a.loan.status !== b.loan.status) {
           return a.loan.status === 'borrowed' ? -1 : 1;
         }
-        return (b.loan.borrowedAt?.toMillis?.() ?? 0) - (a.loan.borrowedAt?.toMillis?.() ?? 0);
+        return (
+          (b.loan.borrowedAt?.toMillis?.() ?? 0) -
+          (a.loan.borrowedAt?.toMillis?.() ?? 0)
+        );
       });
-  }, [allLoans]);
+  }, [allLoans, loanSearch, loanStatusFilter]);
 
   const sortedNotifications = useMemo(() => {
     return [...notifications].sort((a, b) => {
@@ -200,6 +255,28 @@ export function LibrarianView({
     }
   };
 
+  const handleQuickAdjustStock = async (book: Book, delta: number) => {
+    const nextTotal = Math.max(1, book.totalCopies + delta);
+    const nextAvailable = Math.max(
+      0,
+      Math.min(nextTotal, book.availableCopies + delta),
+    );
+    await onUpdateBook(book.id, {
+      title: book.title,
+      author: book.author,
+      isbn: book.isbn,
+      category: book.category,
+      publishedYear: book.publishedYear,
+      pages: book.pages,
+      synopsis: book.synopsis,
+      coverUrl: book.coverUrl,
+      totalCopies: nextTotal,
+      availableCopies: nextAvailable,
+      loanDurationDays: book.loanDurationDays,
+      digitalReadExcerpt: book.digitalReadExcerpt,
+    });
+  };
+
   const handleRunSweep = async () => {
     setIsSweeping(true);
     setSweepMessage(null);
@@ -212,6 +289,52 @@ export function LibrarianView({
       );
     } finally {
       setIsSweeping(false);
+    }
+  };
+
+  const handleUpdateCredentials = async (e: FormEvent) => {
+    e.preventDefault();
+    setCredStatusMsg(null);
+    if (!librarianSession?.token) {
+      setCredStatusMsg({
+        type: 'error',
+        text: 'Sesi username & password belum aktif. Masuk kembali lewat Portal Pustakawan.',
+      });
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setCredStatusMsg({
+        type: 'error',
+        text: 'Konfirmasi password baru tidak cocok.',
+      });
+      return;
+    }
+    setSavingCreds(true);
+    try {
+      const updated = await updateLibrarianCredentials(
+        librarianSession.token,
+        currentPassword,
+        newUsername.trim(),
+        newPassword,
+      );
+      onLibrarianCredentialsUpdated(updated);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setCredStatusMsg({
+        type: 'success',
+        text: `Kredensial diperbarui. Username aktif: ${updated.username}`,
+      });
+    } catch (err) {
+      setCredStatusMsg({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Gagal memperbarui username & password.',
+      });
+    } finally {
+      setSavingCreds(false);
     }
   };
 
@@ -235,12 +358,13 @@ export function LibrarianView({
       count: unreadNotifCount > 0 ? unreadNotifCount : undefined,
     },
     { id: 'members', label: 'Anggota & Akses', icon: Users, count: allMembers.length },
+    { id: 'settings', label: 'Akun Pustakawan', icon: KeyRound },
   ];
 
   const sectionTitles: Record<LibrarianSection, { title: string; subtitle: string }> = {
     books: {
       title: 'Manajemen Koleksi Buku',
-      subtitle: 'Tambah, perbarui, pantau stok eksemplar, dan kelola katalog CeriLib.',
+      subtitle: 'Tambah, perbarui, atur stok eksemplar, dan kelola katalog CeriLib.',
     },
     circulation: {
       title: 'Sirkulasi & Pemantauan Tenggat',
@@ -254,11 +378,15 @@ export function LibrarianView({
       title: 'Daftar Anggota & Hak Akses',
       subtitle: 'Kelola keanggotaan dan penugasan peran pustakawan.',
     },
+    settings: {
+      title: 'Pengaturan Akun Pustakawan',
+      subtitle: 'Kustomisasi username dan password untuk portal masuk pustakawan.',
+    },
   };
 
   return (
     <div className="min-h-screen bg-[#FAF6F2] text-[#2A1A1F] flex flex-col lg:flex-row">
-      {/* Dedicated Librarian Sidebar */}
+      {/* Sidebar */}
       <aside className="lg:w-64 shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-[#EADFD9] flex flex-col justify-between">
         <div>
           <div className="px-5 py-4 border-b border-[#EADFD9] flex items-center justify-between lg:block">
@@ -313,7 +441,7 @@ export function LibrarianView({
         <div className="hidden lg:block p-4 border-t border-[#EADFD9] space-y-3">
           <div className="px-1">
             <p className="text-xs font-semibold text-[#2A1A1F] truncate">
-              {userProfile.displayName}
+              {librarianSession?.username || userProfile.displayName}
             </p>
             <p className="text-[11px] text-[#6E585F] font-mono truncate">
               {userProfile.email}
@@ -341,9 +469,8 @@ export function LibrarianView({
         </div>
       </aside>
 
-      {/* Main Librarian Workspace Viewport */}
+      {/* Main Content */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Contextual Top Bar */}
         <header className="bg-white border-b border-[#EADFD9] px-5 sm:px-8 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <p className="text-[11px] text-[#6E585F] mb-0.5">
@@ -387,7 +514,7 @@ export function LibrarianView({
         </header>
 
         <main className="flex-1 p-5 sm:p-8 space-y-6 max-w-6xl w-full">
-          {/* Summary KPI Strip */}
+          {/* KPI Strip */}
           <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white border border-[#EADFD9] rounded-xl p-4">
               <p className="text-xs text-[#6E585F]">Total Judul Koleksi</p>
@@ -430,7 +557,6 @@ export function LibrarianView({
           {/* SECTION 1: Collection Management */}
           {activeSection === 'books' && (
             <section className="space-y-4">
-              {/* Filter Bar */}
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                 <div className="relative flex-1 max-w-md">
                   <Search
@@ -446,22 +572,45 @@ export function LibrarianView({
                   />
                 </div>
 
-                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                  {['Semua', ...BOOK_CATEGORIES].map((cat) => (
+                <div className="flex items-center gap-1.5">
+                  {(
+                    [
+                      { id: 'all', label: 'Semua Stok' },
+                      { id: 'available', label: 'Tersedia' },
+                      { id: 'empty', label: 'Habis' },
+                    ] as { id: StockFilter; label: string }[]
+                  ).map((st) => (
                     <button
-                      key={cat}
+                      key={st.id}
                       type="button"
-                      onClick={() => setBookCategoryFilter(cat)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-                        bookCategoryFilter === cat
-                          ? 'bg-[#8F2D45] text-white'
+                      onClick={() => setStockFilter(st.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap cursor-pointer ${
+                        stockFilter === st.id
+                          ? 'bg-[#2A1A1F] text-white'
                           : 'bg-white border border-[#EADFD9] text-[#6E585F] hover:text-[#2A1A1F]'
                       }`}
                     >
-                      {cat}
+                      {st.label}
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                {['Semua', ...BOOK_CATEGORIES].map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setBookCategoryFilter(cat)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                      bookCategoryFilter === cat
+                        ? 'bg-[#8F2D45] text-white'
+                        : 'bg-white border border-[#EADFD9] text-[#6E585F] hover:text-[#2A1A1F]'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
               </div>
 
               <div className="bg-white border border-[#EADFD9] rounded-xl overflow-hidden">
@@ -472,8 +621,8 @@ export function LibrarianView({
                         <th className="py-3.5 px-5">Koleksi Buku</th>
                         <th className="py-3.5 px-4">Kategori</th>
                         <th className="py-3.5 px-4">ISBN</th>
-                        <th className="py-3.5 px-4 text-right">Ketersediaan</th>
-                        <th className="py-3.5 px-4 text-right">Batas Pinjam</th>
+                        <th className="py-3.5 px-4 text-center">Atur Stok</th>
+                        <th className="py-3.5 px-4 text-right">Durasi</th>
                         <th className="py-3.5 px-5 text-right">Aksi</th>
                       </tr>
                     </thead>
@@ -500,10 +649,10 @@ export function LibrarianView({
                                   />
                                 </div>
                                 <div className="min-w-0">
-                                  <p className="font-medium text-[#2A1A1F] truncate max-w-[260px]">
+                                  <p className="font-medium text-[#2A1A1F] truncate max-w-[240px]">
                                     {book.title}
                                   </p>
-                                  <p className="text-xs text-[#6E585F] mt-0.5 truncate max-w-[260px]">
+                                  <p className="text-xs text-[#6E585F] mt-0.5 truncate max-w-[240px]">
                                     {book.author} ·{' '}
                                     <span className="font-mono tabular-nums">
                                       {book.publishedYear}
@@ -518,16 +667,35 @@ export function LibrarianView({
                             <td className="py-3.5 px-4 font-mono tabular-nums text-xs text-[#6E585F] whitespace-nowrap">
                               {book.isbn}
                             </td>
-                            <td className="py-3.5 px-4 text-right font-mono tabular-nums text-xs whitespace-nowrap">
-                              <span
-                                className={
-                                  book.availableCopies > 0
-                                    ? 'text-[#15803D] font-medium'
-                                    : 'text-[#B91C1C] font-medium'
-                                }
-                              >
-                                {book.availableCopies}/{book.totalCopies}
-                              </span>
+                            <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                              <div className="inline-flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleQuickAdjustStock(book, -1)}
+                                  disabled={book.totalCopies <= 1}
+                                  aria-label={`Kurangi stok ${book.title}`}
+                                  className="w-6 h-6 rounded border border-[#DECFC8] text-xs font-mono text-[#2A1A1F] hover:bg-[#F3EAE6] disabled:opacity-40 cursor-pointer"
+                                >
+                                  -
+                                </button>
+                                <span
+                                  className={`font-mono tabular-nums text-xs min-w-[44px] ${
+                                    book.availableCopies > 0
+                                      ? 'text-[#15803D] font-medium'
+                                      : 'text-[#B91C1C] font-medium'
+                                  }`}
+                                >
+                                  {book.availableCopies}/{book.totalCopies}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleQuickAdjustStock(book, 1)}
+                                  aria-label={`Tambah stok ${book.title}`}
+                                  className="w-6 h-6 rounded border border-[#DECFC8] text-xs font-mono text-[#2A1A1F] hover:bg-[#F3EAE6] cursor-pointer"
+                                >
+                                  +
+                                </button>
+                              </div>
                             </td>
                             <td className="py-3.5 px-4 text-right font-mono tabular-nums text-xs text-[#6E585F] whitespace-nowrap">
                               {book.loanDurationDays} hari
@@ -611,6 +779,45 @@ export function LibrarianView({
                 </button>
               </div>
 
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="relative flex-1 max-w-md">
+                  <Search
+                    aria-hidden="true"
+                    className="w-4 h-4 text-[#6E585F] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                  />
+                  <input
+                    type="search"
+                    value={loanSearch}
+                    onChange={(e) => setLoanSearch(e.target.value)}
+                    placeholder="Cari nama peminjam, email, atau judul buku..."
+                    className="w-full pl-10 pr-4 py-2 bg-white border border-[#DECFC8] rounded-lg text-sm text-[#2A1A1F] placeholder:text-[#9A858C] focus:outline-none focus:border-[#8F2D45]"
+                  />
+                </div>
+                <div className="flex items-center gap-1.5 overflow-x-auto">
+                  {(
+                    [
+                      { id: 'all', label: 'Semua' },
+                      { id: 'active', label: 'Dipinjam' },
+                      { id: 'overdue', label: 'Terlambat' },
+                      { id: 'returned', label: 'Dikembalikan' },
+                    ] as { id: LoanStatusFilter; label: string }[]
+                  ).map((st) => (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => setLoanStatusFilter(st.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap cursor-pointer ${
+                        loanStatusFilter === st.id
+                          ? 'bg-[#8F2D45] text-white'
+                          : 'bg-white border border-[#EADFD9] text-[#6E585F] hover:text-[#2A1A1F]'
+                      }`}
+                    >
+                      {st.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="bg-white border border-[#EADFD9] rounded-xl overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
@@ -624,14 +831,14 @@ export function LibrarianView({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#F3EAE6] text-sm">
-                      {sortedLoans.length === 0 ? (
+                      {filteredLoans.length === 0 ? (
                         <tr>
                           <td colSpan={5} className="py-12 text-center text-sm text-[#6E585F]">
-                            Belum ada transaksi peminjaman.
+                            Tidak ada transaksi peminjaman pada filter ini.
                           </td>
                         </tr>
                       ) : (
-                        sortedLoans.map(({ loan, timing }) => (
+                        filteredLoans.map(({ loan, timing }) => (
                           <tr key={loan.id} className="hover:bg-[#FAF6F2]/60 transition-colors">
                             <td className="py-4 px-5">
                               <p className="font-medium text-[#2A1A1F]">{loan.userName}</p>
@@ -754,7 +961,7 @@ export function LibrarianView({
             </section>
           )}
 
-          {/* SECTION 4: Members & Librarian Roles */}
+          {/* SECTION 4: Members & Roles */}
           {activeSection === 'members' && (
             <section className="bg-white border border-[#EADFD9] rounded-xl overflow-hidden">
               <div className="overflow-x-auto">
@@ -804,6 +1011,108 @@ export function LibrarianView({
                   </tbody>
                 </table>
               </div>
+            </section>
+          )}
+
+          {/* SECTION 5: Custom Librarian Username & Password Settings */}
+          {activeSection === 'settings' && (
+            <section className="max-w-xl bg-white border border-[#EADFD9] rounded-xl p-6 space-y-5">
+              <div>
+                <h2 className="font-display text-base font-semibold text-[#2A1A1F]">
+                  Ubah Username & Password Pustakawan
+                </h2>
+                <p className="text-xs text-[#6E585F] mt-1 leading-relaxed">
+                  Sesuaikan username dan password khusus untuk masuk ke Portal Pustakawan. Password disimpan dalam bentuk hash aman di server.
+                </p>
+              </div>
+
+              {librarianSession?.usingEnvOverride ? (
+                <div className="bg-[#FFFBEB] border border-[#FDE68A] rounded-lg p-4 text-xs text-[#B45309] leading-relaxed">
+                  Kredensial saat ini dikunci oleh variabel lingkungan{' '}
+                  <span className="font-mono">LIBRARIAN_USERNAME</span> dan{' '}
+                  <span className="font-mono">LIBRARIAN_PASSWORD</span> di pengaturan server.
+                </div>
+              ) : (
+                <form onSubmit={handleUpdateCredentials} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-[#2A1A1F] mb-1.5">
+                      Password Saat Ini
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      className="w-full px-3.5 py-2 bg-[#FAF6F2] border border-[#DECFC8] rounded-lg text-sm focus:outline-none focus:border-[#8F2D45]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-[#2A1A1F] mb-1.5">
+                      Username Baru
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      minLength={3}
+                      maxLength={40}
+                      value={newUsername}
+                      onChange={(e) => setNewUsername(e.target.value)}
+                      placeholder="contoh: admin_cerilib"
+                      className="w-full px-3.5 py-2 bg-[#FAF6F2] border border-[#DECFC8] rounded-lg text-sm focus:outline-none focus:border-[#8F2D45]"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-[#2A1A1F] mb-1.5">
+                        Password Baru
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        className="w-full px-3.5 py-2 bg-[#FAF6F2] border border-[#DECFC8] rounded-lg text-sm focus:outline-none focus:border-[#8F2D45]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[#2A1A1F] mb-1.5">
+                        Konfirmasi Password Baru
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        value={confirmNewPassword}
+                        onChange={(e) => setConfirmNewPassword(e.target.value)}
+                        className="w-full px-3.5 py-2 bg-[#FAF6F2] border border-[#DECFC8] rounded-lg text-sm focus:outline-none focus:border-[#8F2D45]"
+                      />
+                    </div>
+                  </div>
+
+                  {credStatusMsg && (
+                    <p
+                      className={`text-xs rounded-lg px-3.5 py-2.5 border ${
+                        credStatusMsg.type === 'error'
+                          ? 'bg-[#FEF2F2] border-[#FECACA] text-[#B91C1C]'
+                          : 'bg-[#F0FDF4] border-[#BBF7D0] text-[#15803D]'
+                      }`}
+                    >
+                      {credStatusMsg.text}
+                    </p>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={savingCreds}
+                    className="px-5 py-2.5 rounded-lg bg-[#8F2D45] text-white text-xs font-medium hover:bg-[#762237] disabled:opacity-60 transition-colors cursor-pointer"
+                  >
+                    {savingCreds ? 'Menyimpan...' : 'Simpan Kredensial Baru'}
+                  </button>
+                </form>
+              )}
             </section>
           )}
         </main>

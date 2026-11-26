@@ -32,6 +32,7 @@ import {
   toggleMemberLibrarianRole,
   updateBook,
 } from './services/libraryService';
+import { LibrarianSessionInfo } from './services/librarianAuthService';
 import {
   ActiveTab,
   Book,
@@ -57,14 +58,31 @@ interface ToastBanner {
   message: string;
 }
 
-const PORTAL_STORAGE_KEY = 'cerilib_portal_mode';
+function getFriendlyAuthError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (raw.includes('auth/popup-blocked')) {
+    return 'Pop-up login Google diblokir oleh browser. Mohon izinkan pop-up untuk situs ini lalu coba lagi.';
+  }
+  if (
+    raw.includes('auth/popup-closed-by-user') ||
+    raw.includes('auth/cancelled-popup-request')
+  ) {
+    return 'Jendela masuk Google ditutup sebelum proses selesai. Silakan coba lagi.';
+  }
+  if (raw.includes('auth/unauthorized-domain')) {
+    return 'Domain aplikasi belum terdaftar di Firebase Authentication Authorized Domains.';
+  }
+  if (raw.includes('auth/network-request-failed')) {
+    return 'Koneksi jaringan gagal saat menghubungi layanan login Google.';
+  }
+  return `Gagal masuk dengan akun Google: ${raw}`;
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('catalog');
-  const [portalMode, setPortalMode] = useState<UserRole>(() => {
-    const saved = window.sessionStorage.getItem(PORTAL_STORAGE_KEY);
-    return saved === 'librarian' ? 'librarian' : 'member';
-  });
+  const [portalMode, setPortalMode] = useState<UserRole>('member');
+  const [librarianSession, setLibrarianSession] =
+    useState<LibrarianSessionInfo | null>(null);
 
   const [authReady, setAuthReady] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -74,7 +92,6 @@ export default function App() {
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authInitialPortal, setAuthInitialPortal] = useState<UserRole>('member');
   const [authError, setAuthError] = useState<string | null>(null);
-  const [pendingNonLibrarianEmail, setPendingNonLibrarianEmail] = useState<string | null>(null);
 
   const [books, setBooks] = useState<Book[]>([]);
   const [loadingBooks, setLoadingBooks] = useState(true);
@@ -103,12 +120,7 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const updatePortalMode = useCallback((mode: UserRole) => {
-    setPortalMode(mode);
-    window.sessionStorage.setItem(PORTAL_STORAGE_KEY, mode);
-  }, []);
-
-  // 1. Auth Listener
+  // 1. Firebase Auth Listener
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
@@ -116,12 +128,16 @@ export default function App() {
         try {
           const profile = await ensureUserProfile(user);
           setUserProfile(profile);
-          // Safety: non-librarians can never stay in librarian portal mode
           if (profile.role !== 'librarian') {
-            updatePortalMode('member');
+            setPortalMode('member');
           }
         } catch (err) {
-          console.error(err);
+          console.error('ensureUserProfile error:', err);
+          setAuthError(
+            err instanceof Error
+              ? err.message
+              : 'Gagal memuat profil anggota dari Firestore.',
+          );
           setUserProfile(null);
         }
       } else {
@@ -129,11 +145,12 @@ export default function App() {
         setAllLoans([]);
         setNotifications([]);
         setAllMembers([]);
+        setPortalMode('member');
       }
       setAuthReady(true);
     });
     return () => unsub();
-  }, [updatePortalMode]);
+  }, []);
 
   // 2. Public Books Listener
   useEffect(() => {
@@ -157,7 +174,6 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // Keep selectedBook fresh when books snapshot updates
   useEffect(() => {
     if (!selectedBook) return;
     const updated = books.find((b) => b.id === selectedBook.id);
@@ -185,7 +201,7 @@ export default function App() {
     }
   }, [authReady, userProfile, loadingBooks, books.length, showToast]);
 
-  // 4. Loans Listener (Scoped by role)
+  // 4. Loans Listener
   useEffect(() => {
     if (!authReady || !userProfile) return;
 
@@ -213,7 +229,7 @@ export default function App() {
     return () => unsub();
   }, [authReady, userProfile]);
 
-  // 5. Notifications Listener (Scoped by role)
+  // 5. Notifications Listener
   useEffect(() => {
     if (!authReady || !userProfile) return;
 
@@ -318,57 +334,67 @@ export default function App() {
   const openAuthModal = useCallback((portal: UserRole = 'member') => {
     setAuthInitialPortal(portal);
     setAuthError(null);
-    setPendingNonLibrarianEmail(null);
     setAuthModalOpen(true);
   }, []);
 
-  const handleSignInWithRole = async (selectedPortal: UserRole) => {
+  const handleMemberGoogleLogin = async () => {
     setIsAuthenticating(true);
     setAuthError(null);
-    setPendingNonLibrarianEmail(null);
     try {
       const credential = await signInWithPopup(auth, googleProvider);
       const profile = await ensureUserProfile(credential.user);
       setUserProfile(profile);
-
-      if (selectedPortal === 'librarian') {
-        if (profile.role === 'librarian') {
-          updatePortalMode('librarian');
-          setAuthModalOpen(false);
-          showToast('success', `Selamat datang di Ruang Pustakawan, ${profile.displayName}.`);
-        } else {
-          // User authenticated with Google, but is not a librarian
-          updatePortalMode('member');
-          setPendingNonLibrarianEmail(profile.email);
-        }
-      } else {
-        updatePortalMode('member');
-        setActiveTab('catalog');
-        setAuthModalOpen(false);
-        showToast('success', `Masuk sebagai Anggota (${profile.displayName}).`);
-      }
+      setPortalMode('member');
+      setActiveTab('catalog');
+      setAuthModalOpen(false);
+      showToast('success', `Berhasil masuk sebagai Anggota (${profile.displayName}).`);
     } catch (error) {
-      const msg =
-        error instanceof Error ? error.message : 'Gagal masuk dengan akun Google.';
-      if (!msg.includes('popup-closed-by-user')) {
-        setAuthError(msg);
-      }
+      setAuthError(getFriendlyAuthError(error));
     } finally {
       setIsAuthenticating(false);
     }
   };
 
-  const handleContinueAsMember = () => {
-    updatePortalMode('member');
-    setPendingNonLibrarianEmail(null);
-    setAuthModalOpen(false);
-    setActiveTab('catalog');
-    showToast('success', 'Masuk ke portal Anggota Biasa.');
+  const handleLibrarianCredentialsVerified = (session: LibrarianSessionInfo) => {
+    setLibrarianSession(session);
+    setAuthError(null);
+    if (userProfile?.role === 'librarian') {
+      setPortalMode('librarian');
+      setAuthModalOpen(false);
+      showToast('success', `Selamat datang di Ruang Pustakawan (${session.username}).`);
+    }
+  };
+
+  const handleConnectLibrarianFirestore = async () => {
+    setIsAuthenticating(true);
+    setAuthError(null);
+    try {
+      const credential = await signInWithPopup(auth, googleProvider);
+      const profile = await ensureUserProfile(credential.user);
+      setUserProfile(profile);
+      if (profile.role === 'librarian') {
+        setPortalMode('librarian');
+        setAuthModalOpen(false);
+        showToast('success', 'Ruang Kerja Pustakawan aktif.');
+      } else {
+        setAuthError(
+          `Akun Google ${profile.email} belum terdaftar sebagai Pustakawan di database. Gunakan akun pustakawan terotorisasi.`,
+        );
+      }
+    } catch (error) {
+      setAuthError(getFriendlyAuthError(error));
+    } finally {
+      setIsAuthenticating(false);
+    }
   };
 
   const handleSignOut = async () => {
+    if (librarianSession) {
+      void fetch('/api/librarian/logout', { method: 'POST' });
+    }
+    setLibrarianSession(null);
+    setPortalMode('member');
     await signOut(auth);
-    updatePortalMode('member');
     setActiveTab('catalog');
     showToast('success', 'Anda telah keluar dari sesi CeriLib.');
   };
@@ -480,14 +506,17 @@ export default function App() {
     );
   };
 
-  const isLibrarianSession =
-    portalMode === 'librarian' && userProfile?.role === 'librarian';
+  const isLibrarianSessionActive =
+    portalMode === 'librarian' &&
+    userProfile?.role === 'librarian' &&
+    Boolean(librarianSession);
 
   return (
     <>
-      {isLibrarianSession && userProfile ? (
+      {isLibrarianSessionActive && userProfile ? (
         <LibrarianView
           userProfile={userProfile}
+          librarianSession={librarianSession}
           books={books}
           allLoans={allLoans}
           notifications={notifications}
@@ -502,8 +531,12 @@ export default function App() {
           onRunOverdueSweep={runOverdueCheck}
           onMarkNotificationRead={handleMarkNotificationRead}
           onToggleLibrarian={handleToggleLibrarian}
+          onLibrarianCredentialsUpdated={(updated) => {
+            setLibrarianSession(updated);
+            showToast('success', 'Username & password pustakawan berhasil diperbarui.');
+          }}
           onSwitchToMemberView={() => {
-            updatePortalMode('member');
+            setPortalMode('member');
             setActiveTab('catalog');
           }}
           onSignOut={handleSignOut}
@@ -517,11 +550,16 @@ export default function App() {
             unreadNotificationsCount={unreadUserNotifications.length}
             isAuthenticating={isAuthenticating}
             onOpenAuthModal={openAuthModal}
-            onSwitchToLibrarianWorkspace={() => updatePortalMode('librarian')}
+            onSwitchToLibrarianWorkspace={() => {
+              if (librarianSession) {
+                setPortalMode('librarian');
+              } else {
+                openAuthModal('librarian');
+              }
+            }}
             onSignOut={handleSignOut}
           />
 
-          {/* Automatic Overdue Alert Banner when member has unread overdue loans */}
           {unreadOverdueForUser.length > 0 && activeTab !== 'notifications' && (
             <div className="bg-[#FEF2F2] border-b border-[#FECACA]">
               <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
@@ -642,16 +680,18 @@ export default function App() {
         </div>
       )}
 
-      {/* Dual-Portal Authentication Modal */}
+      {/* Dual-Portal Auth Modal */}
       <AuthPortalModal
         isOpen={authModalOpen}
         initialPortal={authInitialPortal}
         isAuthenticating={isAuthenticating}
         authError={authError}
-        pendingNonLibrarianEmail={pendingNonLibrarianEmail}
+        userProfile={userProfile}
+        librarianSession={librarianSession}
         onClose={() => setAuthModalOpen(false)}
-        onSignInWithRole={handleSignInWithRole}
-        onContinueAsMember={handleContinueAsMember}
+        onMemberGoogleLogin={handleMemberGoogleLogin}
+        onLibrarianCredentialsVerified={handleLibrarianCredentialsVerified}
+        onConnectLibrarianFirestore={handleConnectLibrarianFirestore}
       />
 
       {/* Action Toast Feedback */}

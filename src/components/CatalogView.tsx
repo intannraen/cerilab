@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import { Book, BOOK_CATEGORIES, Loan, UserProfile } from '../types/library';
+import { Book, BOOK_CATEGORIES, Loan, UserProfile, UserRole } from '../types/library';
 import { BookCover } from './BookCover';
-import { BookOpen, Search, Sparkles } from 'lucide-react';
+import { BookOpen, Search, Shield, Sparkles, UserCheck } from 'lucide-react';
 
 interface CatalogViewProps {
   books: Book[];
@@ -10,7 +10,7 @@ interface CatalogViewProps {
   activeUserLoans: Loan[];
   onSelectBook: (book: Book) => void;
   onReadBook: (book: Book) => void;
-  onSignIn: () => void;
+  onOpenAuthModal: (portal: UserRole) => void;
   onSeedStarterCatalog: () => Promise<void>;
   isSeeding: boolean;
 }
@@ -22,7 +22,7 @@ export function CatalogView({
   activeUserLoans,
   onSelectBook,
   onReadBook,
-  onSignIn,
+  onOpenAuthModal,
   onSeedStarterCatalog,
   isSeeding,
 }: CatalogViewProps) {
@@ -72,7 +72,7 @@ export function CatalogView({
           </p>
         </div>
 
-        <div className="lg:col-span-4 flex flex-col sm:flex-row lg:flex-col items-start lg:items-end justify-end gap-4">
+        <div className="lg:col-span-4 flex flex-col items-start lg:items-end justify-end gap-4">
           <div className="grid grid-cols-2 gap-6 text-left lg:text-right">
             <div>
               <p className="text-xs text-[#6E585F]">Judul Koleksi</p>
@@ -87,14 +87,26 @@ export function CatalogView({
               </p>
             </div>
           </div>
+
           {!userProfile && (
-            <button
-              type="button"
-              onClick={onSignIn}
-              className="px-5 py-2.5 rounded-lg bg-[#8F2D45] text-white text-sm font-medium hover:bg-[#762237] transition-colors cursor-pointer"
-            >
-              Masuk untuk Meminjam
-            </button>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => onOpenAuthModal('member')}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#8F2D45] text-white text-xs font-medium hover:bg-[#762237] transition-colors whitespace-nowrap cursor-pointer"
+              >
+                <UserCheck className="w-3.5 h-3.5" />
+                <span>Masuk Anggota</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenAuthModal('librarian')}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#DECFC8] bg-white text-[#2A1A1F] text-xs font-medium hover:bg-[#F3EAE6] transition-colors whitespace-nowrap cursor-pointer"
+              >
+                <Shield className="w-3.5 h-3.5 text-[#8F2D45]" />
+                <span>Login Pustakawan</span>
+              </button>
+            </div>
           )}
         </div>
       </section>
@@ -176,8 +188,8 @@ export function CatalogView({
           <p className="text-sm text-[#6E585F] leading-relaxed mb-6">
             Belum ada buku yang ditambahkan ke database perpustakaan.{' '}
             {userProfile?.role === 'librarian'
-              ? 'Anda dapat memuat 6 koleksi awal secara otomatis atau menambahkan buku baru dari menu Pustakawan.'
-              : 'Silakan masuk sebagai Pustakawan untuk mengisi koleksi awal perpustakaan.'}
+              ? 'Anda dapat memuat 6 koleksi awal secara otomatis atau menambahkan buku baru dari ruang Pustakawan.'
+              : 'Silakan masuk melalui Portal Pustakawan untuk mengisi koleksi awal perpustakaan.'}
           </p>
           {userProfile?.role === 'librarian' ? (
             <button
@@ -192,10 +204,11 @@ export function CatalogView({
           ) : !userProfile ? (
             <button
               type="button"
-              onClick={onSignIn}
+              onClick={() => onOpenAuthModal('librarian')}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#8F2D45] text-white text-sm font-medium hover:bg-[#762237] transition-colors cursor-pointer"
             >
-              <span>Masuk Anggota / Pustakawan</span>
+              <Shield className="w-4 h-4" />
+              <span>Login Pustakawan</span>
             </button>
           ) : null}
         </div>
@@ -244,7 +257,6 @@ export function CatalogView({
 
                 <div className="p-5 flex-1 flex flex-col justify-between gap-4">
                   <div className="space-y-1.5">
-                    {/* Unboxed clean metadata with typographic separators */}
                     <div className="flex items-center gap-2 text-xs text-[#6E585F]">
                       <span className="font-medium text-[#8F2D45]">{book.category}</span>
                       <span aria-hidden="true">·</span>

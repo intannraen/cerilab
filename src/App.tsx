@@ -39,6 +39,7 @@ import {
   LibraryNotification,
   Loan,
   UserProfile,
+  UserRole,
 } from './types/library';
 import { Header } from './components/Header';
 import { CatalogView } from './components/CatalogView';
@@ -47,6 +48,7 @@ import { DigitalReaderModal } from './components/DigitalReaderModal';
 import { LoansHistoryView } from './components/LoansHistoryView';
 import { NotificationsView } from './components/NotificationsView';
 import { LibrarianView } from './components/LibrarianView';
+import { AuthPortalModal } from './components/AuthPortalModal';
 import { AlertTriangle, CheckCircle2, X } from 'lucide-react';
 
 interface ToastBanner {
@@ -55,12 +57,24 @@ interface ToastBanner {
   message: string;
 }
 
+const PORTAL_STORAGE_KEY = 'cerilib_portal_mode';
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('catalog');
+  const [portalMode, setPortalMode] = useState<UserRole>(() => {
+    const saved = window.sessionStorage.getItem(PORTAL_STORAGE_KEY);
+    return saved === 'librarian' ? 'librarian' : 'member';
+  });
+
   const [authReady, setAuthReady] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authInitialPortal, setAuthInitialPortal] = useState<UserRole>('member');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [pendingNonLibrarianEmail, setPendingNonLibrarianEmail] = useState<string | null>(null);
 
   const [books, setBooks] = useState<Book[]>([]);
   const [loadingBooks, setLoadingBooks] = useState(true);
@@ -89,6 +103,11 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  const updatePortalMode = useCallback((mode: UserRole) => {
+    setPortalMode(mode);
+    window.sessionStorage.setItem(PORTAL_STORAGE_KEY, mode);
+  }, []);
+
   // 1. Auth Listener
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -97,6 +116,10 @@ export default function App() {
         try {
           const profile = await ensureUserProfile(user);
           setUserProfile(profile);
+          // Safety: non-librarians can never stay in librarian portal mode
+          if (profile.role !== 'librarian') {
+            updatePortalMode('member');
+          }
         } catch (err) {
           console.error(err);
           setUserProfile(null);
@@ -110,7 +133,7 @@ export default function App() {
       setAuthReady(true);
     });
     return () => unsub();
-  }, []);
+  }, [updatePortalMode]);
 
   // 2. Public Books Listener
   useEffect(() => {
@@ -241,7 +264,7 @@ export default function App() {
     return () => unsub();
   }, [authReady, userProfile]);
 
-  // 7. Automatic Overdue Notification Engine (runs on data change + every 30s)
+  // 7. Automatic Overdue Notification Engine
   const runOverdueCheck = useCallback(async (): Promise<number> => {
     if (!userProfile || syncInProgressRef.current) return 0;
     syncInProgressRef.current = true;
@@ -281,14 +304,9 @@ export default function App() {
     return notifications.filter((n) => n.userId === userProfile.uid);
   }, [notifications, userProfile]);
 
-  const displayedNotifications = useMemo(() => {
-    if (!userProfile) return [];
-    return userProfile.role === 'librarian' ? notifications : userNotifications;
-  }, [userProfile, notifications, userNotifications]);
-
-  const unreadNotifications = useMemo(
-    () => displayedNotifications.filter((n) => !n.isRead),
-    [displayedNotifications],
+  const unreadUserNotifications = useMemo(
+    () => userNotifications.filter((n) => !n.isRead),
+    [userNotifications],
   );
 
   const unreadOverdueForUser = useMemo(
@@ -296,32 +314,68 @@ export default function App() {
     [userNotifications],
   );
 
-  // Handlers
-  const handleSignIn = async () => {
+  // Auth Portal Handlers
+  const openAuthModal = useCallback((portal: UserRole = 'member') => {
+    setAuthInitialPortal(portal);
+    setAuthError(null);
+    setPendingNonLibrarianEmail(null);
+    setAuthModalOpen(true);
+  }, []);
+
+  const handleSignInWithRole = async (selectedPortal: UserRole) => {
     setIsAuthenticating(true);
+    setAuthError(null);
+    setPendingNonLibrarianEmail(null);
     try {
-      await signInWithPopup(auth, googleProvider);
-      showToast('success', 'Berhasil masuk ke CeriLib.');
+      const credential = await signInWithPopup(auth, googleProvider);
+      const profile = await ensureUserProfile(credential.user);
+      setUserProfile(profile);
+
+      if (selectedPortal === 'librarian') {
+        if (profile.role === 'librarian') {
+          updatePortalMode('librarian');
+          setAuthModalOpen(false);
+          showToast('success', `Selamat datang di Ruang Pustakawan, ${profile.displayName}.`);
+        } else {
+          // User authenticated with Google, but is not a librarian
+          updatePortalMode('member');
+          setPendingNonLibrarianEmail(profile.email);
+        }
+      } else {
+        updatePortalMode('member');
+        setActiveTab('catalog');
+        setAuthModalOpen(false);
+        showToast('success', `Masuk sebagai Anggota (${profile.displayName}).`);
+      }
     } catch (error) {
       const msg =
-        error instanceof Error ? error.message : 'Gagal masuk dengan Google.';
+        error instanceof Error ? error.message : 'Gagal masuk dengan akun Google.';
       if (!msg.includes('popup-closed-by-user')) {
-        showToast('error', msg);
+        setAuthError(msg);
       }
     } finally {
       setIsAuthenticating(false);
     }
   };
 
+  const handleContinueAsMember = () => {
+    updatePortalMode('member');
+    setPendingNonLibrarianEmail(null);
+    setAuthModalOpen(false);
+    setActiveTab('catalog');
+    showToast('success', 'Masuk ke portal Anggota Biasa.');
+  };
+
   const handleSignOut = async () => {
     await signOut(auth);
+    updatePortalMode('member');
     setActiveTab('catalog');
     showToast('success', 'Anda telah keluar dari sesi CeriLib.');
   };
 
   const handleBorrowBook = async (book: Book, durationDays: number) => {
     if (!userProfile) {
-      await handleSignIn();
+      openAuthModal('member');
       return;
     }
     setIsBorrowing(true);
@@ -366,8 +420,8 @@ export default function App() {
     await markNotificationRead(notificationId);
   };
 
-  const handleMarkAllRead = async () => {
-    for (const n of unreadNotifications) {
+  const handleMarkAllUserNotificationsRead = async () => {
+    for (const n of unreadUserNotifications) {
       await markNotificationRead(n.id);
     }
     showToast('success', 'Semua notifikasi ditandai sudah dibaca.');
@@ -426,157 +480,178 @@ export default function App() {
     );
   };
 
-  return (
-    <div className="min-h-screen flex flex-col bg-[#FAF6F2] text-[#2A1A1F]">
-      <Header
-        activeTab={activeTab}
-        onSelectTab={setActiveTab}
-        userProfile={userProfile}
-        unreadNotificationsCount={unreadNotifications.length}
-        isAuthenticating={isAuthenticating}
-        onSignIn={handleSignIn}
-        onSignOut={handleSignOut}
-      />
+  const isLibrarianSession =
+    portalMode === 'librarian' && userProfile?.role === 'librarian';
 
-      {/* Automatic Overdue Alert Banner when user has unread overdue loans */}
-      {unreadOverdueForUser.length > 0 && activeTab !== 'notifications' && (
-        <div className="bg-[#FEF2F2] border-b border-[#FECACA]">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2 text-[#B91C1C]">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span className="font-medium">
-                Peringatan Otomatis: Anda memiliki{' '}
-                <span className="font-mono tabular-nums font-semibold">
-                  {unreadOverdueForUser.length}
-                </span>{' '}
-                peminjaman buku yang melewati batas pengembalian.
-              </span>
+  return (
+    <>
+      {isLibrarianSession && userProfile ? (
+        <LibrarianView
+          userProfile={userProfile}
+          books={books}
+          allLoans={allLoans}
+          notifications={notifications}
+          allMembers={allMembers}
+          onCreateBook={handleCreateBook}
+          onUpdateBook={handleUpdateBook}
+          onDeleteBook={handleDeleteBook}
+          onSeedStarterCatalog={handleSeedStarterCatalog}
+          onReturnLoan={handleReturnBook}
+          onSimulateOverdue={handleSimulateOverdue}
+          onExtendLoan={handleExtendLoan}
+          onRunOverdueSweep={runOverdueCheck}
+          onMarkNotificationRead={handleMarkNotificationRead}
+          onToggleLibrarian={handleToggleLibrarian}
+          onSwitchToMemberView={() => {
+            updatePortalMode('member');
+            setActiveTab('catalog');
+          }}
+          onSignOut={handleSignOut}
+        />
+      ) : (
+        <div className="min-h-screen flex flex-col bg-[#FAF6F2] text-[#2A1A1F]">
+          <Header
+            activeTab={activeTab}
+            onSelectTab={setActiveTab}
+            userProfile={userProfile}
+            unreadNotificationsCount={unreadUserNotifications.length}
+            isAuthenticating={isAuthenticating}
+            onOpenAuthModal={openAuthModal}
+            onSwitchToLibrarianWorkspace={() => updatePortalMode('librarian')}
+            onSignOut={handleSignOut}
+          />
+
+          {/* Automatic Overdue Alert Banner when member has unread overdue loans */}
+          {unreadOverdueForUser.length > 0 && activeTab !== 'notifications' && (
+            <div className="bg-[#FEF2F2] border-b border-[#FECACA]">
+              <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 text-[#B91C1C]">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span className="font-medium">
+                    Peringatan Otomatis: Anda memiliki{' '}
+                    <span className="font-mono tabular-nums font-semibold">
+                      {unreadOverdueForUser.length}
+                    </span>{' '}
+                    peminjaman buku yang melewati batas pengembalian.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('notifications')}
+                  className="text-xs font-semibold text-[#B91C1C] underline underline-offset-4 hover:text-[#991B1B] self-start sm:self-auto cursor-pointer"
+                >
+                  Lihat Notifikasi
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setActiveTab('notifications')}
-              className="text-xs font-semibold text-[#B91C1C] underline underline-offset-4 hover:text-[#991B1B] self-start sm:self-auto cursor-pointer"
-            >
-              Lihat Notifikasi
-            </button>
-          </div>
+          )}
+
+          <main className="flex-1">
+            {activeTab === 'catalog' && (
+              <CatalogView
+                books={books}
+                loadingBooks={loadingBooks}
+                userProfile={userProfile}
+                activeUserLoans={userLoans}
+                onSelectBook={setSelectedBook}
+                onReadBook={setReadingBook}
+                onOpenAuthModal={openAuthModal}
+                onSeedStarterCatalog={handleSeedStarterCatalog}
+                isSeeding={isSeeding}
+              />
+            )}
+
+            {activeTab === 'loans' && (
+              <LoansHistoryView
+                userProfile={userProfile}
+                loans={userLoans}
+                books={books}
+                loadingLoans={loadingLoans}
+                returningLoanId={returningLoanId}
+                onReturnBook={handleReturnBook}
+                onReadBook={setReadingBook}
+                onBrowseCatalog={() => setActiveTab('catalog')}
+                onSignIn={() => openAuthModal('member')}
+              />
+            )}
+
+            {activeTab === 'notifications' && (
+              <NotificationsView
+                userProfile={userProfile}
+                notifications={userNotifications}
+                loans={userLoans}
+                onMarkRead={handleMarkNotificationRead}
+                onMarkAllRead={handleMarkAllUserNotificationsRead}
+                onReturnLoanById={handleReturnLoanById}
+                onSignIn={() => openAuthModal('member')}
+              />
+            )}
+          </main>
+
+          <footer className="border-t border-[#EADFD9] bg-[#FAF6F2] mt-16">
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#6E585F]">
+              <p>
+                CeriLib Perpustakaan Digital · Peminjaman Daring & Pengelolaan Koleksi Minimalis
+              </p>
+              <div className="flex items-center gap-5">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('catalog')}
+                  className="hover:text-[#2A1A1F] cursor-pointer"
+                >
+                  Katalog
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('loans')}
+                  className="hover:text-[#2A1A1F] cursor-pointer"
+                >
+                  Riwayat Pinjam
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAuthModal('librarian')}
+                  className="hover:text-[#8F2D45] cursor-pointer"
+                >
+                  Portal Pustakawan
+                </button>
+              </div>
+            </div>
+          </footer>
+
+          <BookDetailModal
+            book={selectedBook}
+            userProfile={userProfile}
+            activeLoanForBook={userLoans.find(
+              (l) => l.bookId === selectedBook?.id && l.status === 'borrowed',
+            )}
+            isBorrowing={isBorrowing}
+            onClose={() => setSelectedBook(null)}
+            onBorrow={handleBorrowBook}
+            onReadBook={(book) => {
+              setSelectedBook(null);
+              setReadingBook(book);
+            }}
+            onSignIn={() => openAuthModal('member')}
+          />
+
+          <DigitalReaderModal
+            book={readingBook}
+            onClose={() => setReadingBook(null)}
+          />
         </div>
       )}
 
-      {/* Main Content */}
-      <main className="flex-1">
-        {activeTab === 'catalog' && (
-          <CatalogView
-            books={books}
-            loadingBooks={loadingBooks}
-            userProfile={userProfile}
-            activeUserLoans={userLoans}
-            onSelectBook={setSelectedBook}
-            onReadBook={setReadingBook}
-            onSignIn={handleSignIn}
-            onSeedStarterCatalog={handleSeedStarterCatalog}
-            isSeeding={isSeeding}
-          />
-        )}
-
-        {activeTab === 'loans' && (
-          <LoansHistoryView
-            userProfile={userProfile}
-            loans={userLoans}
-            books={books}
-            loadingLoans={loadingLoans}
-            returningLoanId={returningLoanId}
-            onReturnBook={handleReturnBook}
-            onReadBook={setReadingBook}
-            onBrowseCatalog={() => setActiveTab('catalog')}
-            onSignIn={handleSignIn}
-          />
-        )}
-
-        {activeTab === 'notifications' && (
-          <NotificationsView
-            userProfile={userProfile}
-            notifications={displayedNotifications}
-            loans={allLoans}
-            onMarkRead={handleMarkNotificationRead}
-            onMarkAllRead={handleMarkAllRead}
-            onReturnLoanById={handleReturnLoanById}
-            onSignIn={handleSignIn}
-          />
-        )}
-
-        {activeTab === 'librarian' && (
-          <LibrarianView
-            userProfile={userProfile}
-            books={books}
-            allLoans={allLoans}
-            allMembers={allMembers}
-            onCreateBook={handleCreateBook}
-            onUpdateBook={handleUpdateBook}
-            onDeleteBook={handleDeleteBook}
-            onSeedStarterCatalog={handleSeedStarterCatalog}
-            onReturnLoan={handleReturnBook}
-            onSimulateOverdue={handleSimulateOverdue}
-            onExtendLoan={handleExtendLoan}
-            onRunOverdueSweep={runOverdueCheck}
-            onToggleLibrarian={handleToggleLibrarian}
-            onSignIn={handleSignIn}
-          />
-        )}
-      </main>
-
-      {/* Quiet Editorial Footer */}
-      <footer className="border-t border-[#EADFD9] bg-[#FAF6F2] mt-16">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#6E585F]">
-          <p>
-            CeriLib Perpustakaan Digital · Peminjaman Daring & Pengelolaan Koleksi Minimalis
-          </p>
-          <div className="flex items-center gap-5">
-            <button
-              type="button"
-              onClick={() => setActiveTab('catalog')}
-              className="hover:text-[#2A1A1F] cursor-pointer"
-            >
-              Katalog
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('loans')}
-              className="hover:text-[#2A1A1F] cursor-pointer"
-            >
-              Riwayat Pinjam
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('notifications')}
-              className="hover:text-[#2A1A1F] cursor-pointer"
-            >
-              Notifikasi
-            </button>
-          </div>
-        </div>
-      </footer>
-
-      {/* Modals */}
-      <BookDetailModal
-        book={selectedBook}
-        userProfile={userProfile}
-        activeLoanForBook={userLoans.find(
-          (l) => l.bookId === selectedBook?.id && l.status === 'borrowed',
-        )}
-        isBorrowing={isBorrowing}
-        onClose={() => setSelectedBook(null)}
-        onBorrow={handleBorrowBook}
-        onReadBook={(book) => {
-          setSelectedBook(null);
-          setReadingBook(book);
-        }}
-        onSignIn={handleSignIn}
-      />
-
-      <DigitalReaderModal
-        book={readingBook}
-        onClose={() => setReadingBook(null)}
+      {/* Dual-Portal Authentication Modal */}
+      <AuthPortalModal
+        isOpen={authModalOpen}
+        initialPortal={authInitialPortal}
+        isAuthenticating={isAuthenticating}
+        authError={authError}
+        pendingNonLibrarianEmail={pendingNonLibrarianEmail}
+        onClose={() => setAuthModalOpen(false)}
+        onSignInWithRole={handleSignInWithRole}
+        onContinueAsMember={handleContinueAsMember}
       />
 
       {/* Action Toast Feedback */}
@@ -606,6 +681,6 @@ export default function App() {
           </button>
         </div>
       )}
-    </div>
+    </>
   );
 }

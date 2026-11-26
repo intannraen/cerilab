@@ -1,5 +1,6 @@
-import { ActiveTab, UserProfile } from '../types/library';
-import { LogIn, LogOut } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ActiveTab, UserProfile, UserRole } from '../types/library';
+import { ChevronDown, LogIn, LogOut, Shield } from 'lucide-react';
 
 interface HeaderProps {
   activeTab: ActiveTab;
@@ -7,7 +8,8 @@ interface HeaderProps {
   userProfile: UserProfile | null;
   unreadNotificationsCount: number;
   isAuthenticating: boolean;
-  onSignIn: () => void;
+  onOpenAuthModal: (portal?: UserRole) => void;
+  onSwitchToLibrarianWorkspace: () => void;
   onSignOut: () => void;
 }
 
@@ -17,9 +19,23 @@ export function Header({
   userProfile,
   unreadNotificationsCount,
   isAuthenticating,
-  onSignIn,
+  onOpenAuthModal,
+  onSwitchToLibrarianWorkspace,
   onSignOut,
 }: HeaderProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, []);
+
   const navItems: { id: ActiveTab; label: string; count?: number }[] = [
     { id: 'catalog', label: 'Katalog' },
     { id: 'loans', label: 'Peminjaman' },
@@ -28,7 +44,6 @@ export function Header({
       label: 'Notifikasi',
       count: unreadNotificationsCount > 0 ? unreadNotificationsCount : undefined,
     },
-    { id: 'librarian', label: 'Pustakawan' },
   ];
 
   return (
@@ -87,32 +102,77 @@ export function Header({
         </nav>
 
         {/* Zone 3: Single Primary Action */}
-        <div className="flex items-center shrink-0">
+        <div className="flex items-center shrink-0 relative" ref={menuRef}>
           {userProfile ? (
-            <button
-              type="button"
-              onClick={onSignOut}
-              title={`${userProfile.displayName} (${userProfile.email})`}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[#DECFC8] bg-white text-xs font-medium text-[#2A1A1F] hover:bg-[#F3EAE6] transition-colors whitespace-nowrap shrink-0 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8F2D45]"
-            >
-              <span className="max-w-[120px] truncate">{userProfile.displayName}</span>
-              <LogOut className="w-3.5 h-3.5 text-[#6E585F]" />
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setMenuOpen((prev) => !prev)}
+                aria-expanded={menuOpen}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[#DECFC8] bg-white text-xs font-medium text-[#2A1A1F] hover:bg-[#F3EAE6] transition-colors whitespace-nowrap shrink-0 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8F2D45]"
+              >
+                <span className="max-w-[130px] truncate">{userProfile.displayName}</span>
+                <ChevronDown className="w-3.5 h-3.5 text-[#6E585F]" />
+              </button>
+
+              {menuOpen && (
+                <div className="absolute right-0 top-full mt-2 w-60 bg-white border border-[#EADFD9] rounded-xl shadow-lg py-2 z-40">
+                  <div className="px-4 py-2.5 border-b border-[#F3EAE6]">
+                    <p className="text-xs font-semibold text-[#2A1A1F] truncate">
+                      {userProfile.displayName}
+                    </p>
+                    <p className="text-[11px] text-[#6E585F] font-mono truncate mt-0.5">
+                      {userProfile.email}
+                    </p>
+                    <p className="text-[11px] text-[#8F2D45] font-mono mt-1">
+                      {userProfile.role === 'librarian' ? 'Pustakawan' : 'Anggota'} ·{' '}
+                      {userProfile.memberCode}
+                    </p>
+                  </div>
+
+                  {userProfile.role === 'librarian' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onSwitchToLibrarianWorkspace();
+                      }}
+                      className="w-full px-4 py-2 text-left text-xs font-medium text-[#8F2D45] hover:bg-[#FAF6F2] flex items-center gap-2 cursor-pointer"
+                    >
+                      <Shield className="w-3.5 h-3.5" />
+                      <span>Buka Ruang Pustakawan</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onSignOut();
+                    }}
+                    className="w-full px-4 py-2 text-left text-xs font-medium text-[#2A1A1F] hover:bg-[#FAF6F2] flex items-center gap-2 cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5 text-[#6E585F]" />
+                    <span>Keluar Akun</span>
+                  </button>
+                </div>
+              )}
+            </>
           ) : (
             <button
               type="button"
               disabled={isAuthenticating}
-              onClick={onSignIn}
+              onClick={() => onOpenAuthModal('member')}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#8F2D45] text-white text-xs font-medium hover:bg-[#762237] disabled:opacity-60 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[#8F2D45]"
             >
               <LogIn className="w-3.5 h-3.5" />
-              <span>{isAuthenticating ? 'Memproses...' : 'Masuk Anggota'}</span>
+              <span>{isAuthenticating ? 'Memproses...' : 'Masuk'}</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Compact Mobile Navigation Row (only below md breakpoint) */}
+      {/* Compact Mobile Navigation Row */}
       <nav
         aria-label="Navigasi seluler"
         className="md:hidden border-t border-[#EADFD9] px-4 py-1.5 flex items-center justify-between gap-2 overflow-x-auto"
